@@ -391,7 +391,7 @@ class RigLConstFanScheduler(RigLScheduler):
         Returns:
             List[int]: List of neuron indices that remain active.
         """
-        if self.dynamic_ablation and self.min_salient_weights_per_neuron != 0:
+       if self.dynamic_ablation and current_gamma != 0:
             dense_fan_in = math.prod(weight.shape[1:])
             # Max nnz elements, regardless of const fan in
             n_ones_max = int(mask.numel() * (1 - sparsity))
