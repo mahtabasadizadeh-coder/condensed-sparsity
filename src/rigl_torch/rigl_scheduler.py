@@ -755,18 +755,18 @@ class RigLScheduler:
         """
         return self.alpha / 2 * (1 + np.cos((self.step * np.pi) / self.T_end))
     def get_dynamic_gamma(self) -> float:
-    """
-    Linearly increase gamma from gamma_init to gamma_final
-    based on current rigl step.
-    """
-    if not self.adaptive_ablation:
-        return self.min_salient_weights_per_neuron
-
-    progress = min(self.rigl_steps / self.total_rigl_steps, 1.0)
-
-    gamma = self.gamma_init + progress * (
-        self.gamma_final - self.gamma_init
-    )
+        """
+        Linearly increase gamma from gamma_init to gamma_final
+        based on current rigl step.
+        """
+        if not self.adaptive_ablation:
+            return self.min_salient_weights_per_neuron
+    
+        progress = min(self.rigl_steps / self.total_rigl_steps, 1.0)
+    
+        gamma = self.gamma_init + progress * (
+            self.gamma_final - self.gamma_init
+        )
 
     return gamma
 
