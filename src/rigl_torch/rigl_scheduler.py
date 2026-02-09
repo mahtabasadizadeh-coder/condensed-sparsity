@@ -191,6 +191,22 @@ class RigLScheduler:
         self.model = model
         self.optimizer = optimizer
         self.min_salient_weights_per_neuron = min_salient_weights_per_neuron
+        # ===== Adaptive gamma_sal (NEW) =====
+        self.adaptive_ablation = True  # میتونی بعداً configurable کنی
+        
+        self.gamma_init = 0.0
+        self.gamma_final = min_salient_weights_per_neuron
+        
+        if self.T_end is None:
+            self.total_rigl_steps = 1
+        else:
+            self.total_rigl_steps = self.T_end // self.delta_T
+        
+        # جلوگیری از صفر شدن
+        if self.total_rigl_steps == 0:
+            self.total_rigl_steps = 1
+        # =====================================
+
         self.use_sparse_init = use_sparse_init
         self.init_method_str = init_method_str
         self.use_sparse_const_fan_in_for_ablation = (
