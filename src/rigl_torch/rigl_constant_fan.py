@@ -374,7 +374,9 @@ class RigLConstFanScheduler(RigLScheduler):
         n_ones: int,
         mod_name: str,
     ) -> List[int]:
+        current_gamma = self.get_dynamic_gamma()
         """Return List of neuron indices to ablate.
+        
 
         Args:
             score_drop (torch.Tensor): Score for weight based magnitude pruning
@@ -420,10 +422,9 @@ class RigLConstFanScheduler(RigLScheduler):
                     reverse=True,
                 )
             ]
-            if self.min_salient_weights_per_neuron >= 1:
-                _min_salient_weights_per_neuron = (
-                    self.min_salient_weights_per_neuron
-                )
+            if current_gamma >= 1:
+                _min_salient_weights_per_neuron = int(current_gamma)
+
             else:
                 if self.use_sparse_const_fan_in_for_ablation:
                     # We will compare against the const-fan-in before ablation
@@ -435,7 +436,8 @@ class RigLConstFanScheduler(RigLScheduler):
                 _min_salient_weights_per_neuron = max(
                     [
                         1,
-                        int(self.min_salient_weights_per_neuron * total_fan_in),
+                        int(current_gamma * total_fan_in)
+
                     ]
                 )
             if (
