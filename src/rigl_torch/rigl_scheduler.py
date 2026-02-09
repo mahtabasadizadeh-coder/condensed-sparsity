@@ -755,18 +755,21 @@ class RigLScheduler:
         """
         return self.alpha / 2 * (1 + np.cos((self.step * np.pi) / self.T_end))
     def get_dynamic_gamma(self) -> float:
-        """
-        Linearly increase gamma from gamma_init to gamma_final
-        based on current rigl step.
-        """
-        if not self.adaptive_ablation:
-            return self.min_salient_weights_per_neuron
+    """
+    Linearly increase gamma from gamma_init to gamma_final
+    based on current rigl step.
+    """
+    if not self.adaptive_ablation:
+        return self.min_salient_weights_per_neuron
 
     progress = min(self.rigl_steps / self.total_rigl_steps, 1.0)
+
     gamma = self.gamma_init + progress * (
         self.gamma_final - self.gamma_init
     )
+
     return gamma
+
 
     def __call__(self) -> bool:
         """Performs prune / regrow step if applicable.
@@ -868,6 +871,26 @@ class RigLScheduler:
 
             # update the mask
             current_mask.data = mask_combined
+            # ===== Adaptive Dynamic Neuron Ablation =====
+            if self.dynamic_ablation:
+            
+                current_gamma = self.get_dynamic_gamma()
+            
+                neuron_saliency = torch.sum(mask_combined, dim=1)
+            
+                if isinstance(current_gamma, float) and current_gamma < 1:
+                    threshold = int(current_gamma * mask_combined.shape[1])
+                else:
+                    threshold = int(current_gamma)
+            
+                neurons_to_ablate = neuron_saliency < threshold
+            
+                mask_combined[neurons_to_ablate] = False
+                w.data[neurons_to_ablate] = 0
+            
+                current_mask.data = mask_combined
+            # ============================================
+
 
         self.reset_momentum()
         self.apply_mask_to_weights()
