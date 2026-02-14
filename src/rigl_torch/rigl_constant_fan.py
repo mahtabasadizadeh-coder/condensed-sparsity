@@ -2,21 +2,21 @@
 """
 from typing import Optional, Dict, Any, List, Tuple, Union
 import torch
-import torch.distributed as dist
+import torch.distributed as dist #برای آموزش روی چند GPU / چند سیستم.
 import math
-from rigl_torch.utils.rigl_utils import (
+from rigl_torch.utils.rigl_utils import ( #3 تابع کمکی
     get_fan_in_tensor,
     get_fan_in_after_ablation,
     calculate_fan_in_and_fan_out,
 )
-from rigl_torch.rigl_scheduler import RigLScheduler
+from rigl_torch.rigl_scheduler import RigLScheduler #کلاس اصلی RigL که این کلاس ازش ارث می‌بره.
 from rigl_torch.exceptions import (
     ConstantFanInException,
     InvalidAblatedNeuronException,
 )
 
 
-class RigLConstFanScheduler(RigLScheduler):
+class RigLConstFanScheduler(RigLScheduler): #کلاس جدید ساخته شده
     """RigL Scheduler with constant fan-in.
 
     Constant fan-in enforced at initalization and during each grow / prune
@@ -75,34 +75,34 @@ class RigLConstFanScheduler(RigLScheduler):
             has IndexMaskHooks registered.
     """
 
-    def __init__(
+    def __init__( #تابع سازنده کلاس.
         self,
         model: torch.nn.Module,
-        optimizer: torch.optim.Optimizer,
-        dense_allocation: int = 1,
-        T_end: Optional[int] = None,
+        optimizer: torch.optim.Optimizer, #الگوریتم آپدیت وزن‌ها.
+        dense_allocation: int = 1, #درصد dense بودن شبکه.
+        T_end: Optional[int] = None, #تا چه step ای pruning و grow ادامه داشته باشد. فعلا هیچ محدودتی
         sparsity_distribution: str = "uniform",
-        ignore_linear_layers: bool = False,
+        ignore_linear_layers: bool = False, #آیا لایه‌های Linear نادیده گرفته شوند؟»
         ignore_mha_layers: bool = False,
-        delta: int = 100,
-        alpha: float = 0.3,
-        static_topo: bool = False,
-        grad_accumulation_n: int = 1,
-        state_dict: Optional[Dict[str, Any]] = None,
-        erk_power_scale=1.0,
-        filter_ablation_threshold: Optional[float] = None,
-        static_ablation: bool = False,
+        delta: int = 100,#هر چند step pruning/grow انجام شود.
+        alpha: float = 0.3,#درصد prune اولیه.
+        static_topo: bool = False,#آیا ساختار sparse مدل ثابت بمونه؟
+        grad_accumulation_n: int = 1,#چند step گرادیان جمع بشه قبل از آپدیت وزن‌ها.
+        state_dict: Optional[Dict[str, Any]] = None,#وزن‌های از قبل ذخیره‌شده برای لود مدل.
+        erk_power_scale=1.0,#کنترل می‌کنه sparsity بین لایه‌ها چطور پخش بشه.
+        filter_ablation_threshold: Optional[float] = None,#اگر اهمیت فیلتر از این کمتر باشه → حذف میشه.
+        static_ablation: bool = False,#حذف دائمی (فقط یک بار).
         dynamic_ablation: bool = False,
-        min_salient_weights_per_neuron: Union[int, float] = 0,
-        use_sparse_init: bool = False,
+        min_salient_weights_per_neuron: Union[int, float] = 0,#حداقل وزن مهم که هر نورون باید نگه داره.
+        use_sparse_init: bool = False,#از اول مدل sparse ساخته بشه.
         init_method_str: str = "",
-        use_sparse_const_fan_in_for_ablation: bool = False,
-        keep_first_layer_dense: bool = False,
+        use_sparse_const_fan_in_for_ablation: bool = False,#تعداد ورودی هر نورون ثابت نگه داشته بشه هنگام prune.
+        keep_first_layer_dense: bool = False,#لایه اول prune نشه.
         initialize_grown_weights: float = 0,
-        no_ablation_module_names: Optional[List[str]] = None,
+        no_ablation_module_names: Optional[List[str]] = None,#لیست اسم لایه‌هایی که حذف نشوند.
     ):
 
-        super().__init__(
+        super().__init__(   #سازنده کلاس RigLScheduler رو اجرا کن.
             model,
             optimizer,
             dense_allocation,
@@ -128,35 +128,36 @@ class RigLConstFanScheduler(RigLScheduler):
             no_ablation_module_names,
         )
         if not hasattr(self, "dynamically_ablated_neuron_idx"):
-            # Only init if not loaded by checkpoint
+            #اگر این متغیر وجود نداشت → بساز.
+            # Only init if not loaded by checkpoint برای هر لایه یک لیست خالی میسازه.
             self.dynamically_ablated_neuron_idx = [
                 [] for _ in range(len(self.W))
             ]
-
-    @torch.no_grad()
-    def random_sparsify(self) -> None:
+#داخلش اندیس نورون‌هایی که کامل حذف شده‌اند (ablate شده‌اند) ذخیره می‌شود
+    @torch.no_grad()#چون initialization است → gradient لازم نیست.
+    def random_sparsify(self) -> None:#تابع برای sparse کردن تصادفی شبکه.
         """Randomly sparsifies model to desired sparsity distribution with
         constant fan in.
         """
-        is_dist: bool = dist.is_initialized()
-        self.backward_masks: List[torch.tensor] = []
-        for idx, (w, num_neurons_to_ablate) in enumerate(
+        is_dist: bool = dist.is_initialized()#آیا multi GPU فعال است؟
+        self.backward_masks: List[torch.tensor] = []#برای ذخیره ماسک هر لایه.
+        for idx, (w, num_neurons_to_ablate) in enumerate(#روی وزن هر لایه loop میزند.
             list(zip(self.W, self.static_ablated_filters))
         ):
             # if sparsity is 0%, skip
-            if self.S[idx] <= 0:
+            if self.S[idx] <= 0:#یعنی لایه dense بماند.
                 self.backward_masks.append(None)
                 continue
 
-            dense_fan_in, _ = calculate_fan_in_and_fan_out(module=w)
-            fan_in = get_fan_in_after_ablation(
+            dense_fan_in, _ = calculate_fan_in_and_fan_out(module=w)#تعداد ورودی نورون‌ها.
+            fan_in = get_fan_in_after_ablation(#fan-in بعد ablation
                 weight_tensor=w,
                 num_neurons_to_ablate=num_neurons_to_ablate,
                 sparsity=self.S[idx],
             )
             # Number of connections to drop per filter
-            s = dense_fan_in - fan_in
-            perm = torch.concat(
+            s = dense_fan_in - fan_in#تعداد کانکشن حذف
+            perm = torch.concat(#اندیس‌های تصادفی برای حذف.
                 [
                     torch.randperm(dense_fan_in).reshape(1, -1)
                     for _ in range(w.shape[0])
@@ -165,24 +166,24 @@ class RigLConstFanScheduler(RigLScheduler):
             # Generate random perm of indices to mask per filter / neuron
             perm = perm[
                 :, :s
-            ]  # Drop s elements from n to achieve desired sparsity
-            mask = torch.concat(
+            ]  # Drop s elements from n to achieve desired sparsitys اتصال تصادفی برای prune اولیه.
+            mask = torch.concat(#ساخت mask اولیه
                 [
                     torch.ones(dense_fan_in).reshape(1, -1)
                     for _ in range(w.shape[0])
                 ]
             )
             for filter_idx in range(mask.shape[0]):
-                mask[filter_idx][perm[filter_idx]] = 0
-            mask = mask.reshape(w.shape).to(device=w.device)
+                mask[filter_idx][perm[filter_idx]] = 0#صفر کردن بعضی وزن‌ها
+            mask = mask.reshape(w.shape).to(device=w.device)#reshape mask
             # Ablate top n neurons according to filter sparsity criterion
-            mask[:num_neurons_to_ablate] = 0
+            mask[:num_neurons_to_ablate] = 0#ablate  این نورون‌ها کلاً dead هستند نورون‌های بالا
 
             if is_dist:
-                dist.broadcast(mask, 0)
-            mask = mask.bool()
-            w *= mask
-            self.backward_masks.append(mask)
+                dist.broadcast(mask, 0)#roadcast در distributed
+            mask = mask.bool()#تبدیل به bool
+            w *= mask#اعمال mask روی وزن
+            self.backward_masks.append(mask)#ذخیره mask
 
     def __str__(self) -> str:
         """Appends constant fan in info to RigL scheduler __str__.
@@ -195,7 +196,7 @@ class RigLConstFanScheduler(RigLScheduler):
             str: String describing state of scheduler.
         """
         s = super().__str__()
-        s = s[:-1]  # Remove trailing ')'
+        s = s[:-1]  # Remove trailing ')'آخرین کاراکتر را حذف می‌کند (احتمالاً )).
         const_fan_ins = []
         for idx, (mask, w) in enumerate(
             zip(
@@ -209,12 +210,16 @@ class RigLConstFanScheduler(RigLScheduler):
             else:
                 try:
                     active_filters = self.active_neurons[idx]
-                    # const_fan_ins.append(
+                    # const_fan_ins.append(برای هر نورون فعال:
+
+تعداد 1های ماسک را می‌شمارد
+
+یعنی تعداد اتصالات فعال آن نورون
                     #     get_fan_in_tensor(mask[active_filters]).unique().item()
                     # )
                     const_fan_ins.append(
                         get_fan_in_tensor(mask[active_filters]).unique().item()
-                    )
+                    )#تمام نورون‌های فعال در یک لایه باید fan-in یکسان داشته باشند.
 
                 except ValueError:
                     raise ConstantFanInException(
@@ -233,7 +238,8 @@ class RigLConstFanScheduler(RigLScheduler):
         return s
 
     @torch.no_grad()
-    def _rigl_step(self) -> None:
+    def _rigl_step(self) -> None:#یک مرحله آپدیت توپولوژی sparse را انجام می‌دهد
+(حذف برخی اتصالات + رشد اتصالات جدید + حذف نورون‌ها)
         """Performs rigl update prune / regrowth with constant fan-in.
 
         Raises:
@@ -241,9 +247,12 @@ class RigLConstFanScheduler(RigLScheduler):
                 mask.
         """
         drop_fraction = self.cosine_annealing()
-        # if distributed these values will be populated
+        # if distributed these values will be populatedاین تابع با cosine schedule مقدار کسری از وزن‌های فعال که باید prune شوند را برمی‌گرداند.
         is_dist = dist.is_initialized()
         world_size = dist.get_world_size() if is_dist else None
+#اگر multi-GPU باشد:
+
+باید امتیازهای prune و grow بین GPUها میانگین گرفته شود.
 
         self.dynamically_ablated_neuron_idx = []
         last_layer_idx = len(self.W) - 1
@@ -255,7 +264,7 @@ class RigLConstFanScheduler(RigLScheduler):
                 continue
 
             # calculate raw scores
-            score_drop = torch.abs(w)
+            score_drop = torch.abs(w)#وزن‌های کوچک‌تر → اول حذف می‌شوند.
             _max_score_drop = score_drop.max().item()
 
             # Set ablated filter drop scores to min of score_grow to avoid
@@ -263,6 +272,11 @@ class RigLConstFanScheduler(RigLScheduler):
             score_drop[
                 : self.static_ablated_filters[idx]
             ] = score_drop.min().item()
+            #نورون‌هایی که قبلاً static حذف شده‌اند:
+
+نباید دوباره وارد prune logic شوند
+
+پس کمترین امتیاز ممکن را می‌گیرند
 
             score_grow = torch.abs(self.backward_hook_objects[idx].dense_grad)
 
@@ -270,6 +284,11 @@ class RigLConstFanScheduler(RigLScheduler):
             score_grow[
                 : self.static_ablated_filters[idx]
             ] = score_grow.min().item()
+#اتصالات جدید بر اساس magnitude گرادیان انتخاب می‌شوند.
+
+یعنی:
+
+گرادیان بزرگ‌تر → اهمیت بیشتر برای رشد
 
             # if is distributed, synchronize scores
             if is_dist:
@@ -287,6 +306,8 @@ class RigLConstFanScheduler(RigLScheduler):
             n_ones = torch.sum(current_mask).item()
             n_prune = int(n_ones * drop_fraction)
             n_keep = int(n_ones - n_prune)
+#چند تا حذف شود؟
+چند تا باقی بماند؟
             n_non_zero_weights = torch.count_nonzero(score_drop).item()
             if n_non_zero_weights < n_keep:
                 # Then we don't have enough non-zero weights to keep. We keep
@@ -303,8 +324,9 @@ class RigLConstFanScheduler(RigLScheduler):
             ):  # Do not ablate last layer if no modules explicitly provided!
                 self._logger.debug(f"Skipping neuron ablation of module {name}")
                 neurons_to_ablate = []
+                #لایه آخر معمولاً ablate نمی‌شود.
             else:
-                neurons_to_ablate = self._get_neurons_to_ablate(
+                neurons_to_ablate = self._get_neurons_to_ablate(#کدام نورون‌ها باید کامل حذف شوند؟
                     score_drop=score_drop,
                     score_grow=score_grow,
                     n_keep=n_keep,
@@ -315,10 +337,10 @@ class RigLConstFanScheduler(RigLScheduler):
                     n_ones=n_ones,
                     mod_name=name,
                 )
-            self.dynamically_ablated_neuron_idx.append(neurons_to_ablate)
+            self.dynamically_ablated_neuron_idx.append(neurons_to_ablate)#ذخیره نورون‌های حذف‌شده
             # print(f"neurons to ablate = {neurons_to_ablate}")
             # print(f"len neurons to ablate = {len(neurons_to_ablate)}")
-            n_fan_in = get_fan_in_after_ablation(
+            n_fan_in = get_fan_in_after_ablation(#هر نورون باقی‌مانده چند اتصال باید داشته باشد؟
                 weight_tensor=w,
                 num_neurons_to_ablate=len(neurons_to_ablate),
                 sparsity=self.S[idx],
@@ -332,7 +354,13 @@ class RigLConstFanScheduler(RigLScheduler):
                 n_fan_in=n_fan_in,
             )
 
-            # create growth mask per filter
+            # create growth mask per filterانتخاب اتصال‌هایی که:
+
+قبلاً صفر بوده‌اند
+
+گرادیان بزرگی دارند
+
+باید رشد کنند
             grow_mask = self._get_grow_mask(
                 score_grow,
                 drop_mask,
@@ -346,13 +374,22 @@ class RigLConstFanScheduler(RigLScheduler):
 
             combined_mask = grow_mask + drop_mask
             current_mask.data = combined_mask
+#drop_mask  → وزن‌هایی که نگه داشتیم
+grow_mask  → وزن‌هایی که اضافه کردیم
 
-            self.reset_momentum()
+            self.reset_momentum()#چون اگر یک وزن prune یا regrow شود:
+
+momentum قدیمی آن معتبر نیست.
             self.apply_mask_to_weights()
             self.apply_mask_to_gradients()
             self._verify_neuron_ablation()
+#وزن‌های zero واقعاً صفر بمانند
+
+گرادیان برای وزن‌های zero محاسبه نشود
+نورون‌های ablate شده واقعاً همه وزن‌شان صفر است.
             if (
                 self.min_salient_weights_per_neuron == 1
+                #گر بیشینه وزن قبل و بعد prune برابر نباشد → هشدار.
                 and torch.abs(w).max().item() != _max_score_drop
             ):
                 self._logger.warning(
@@ -362,7 +399,7 @@ class RigLConstFanScheduler(RigLScheduler):
                 )
 
     @torch.no_grad()
-    def _get_neurons_to_ablate(
+    def _get_neurons_to_ablate(#کدام نورون‌ها کامل حذف شوند؟
         self,
         score_drop: torch.Tensor,
         score_grow: torch.Tensor,
@@ -391,23 +428,25 @@ class RigLConstFanScheduler(RigLScheduler):
         Returns:
             List[int]: List of neuron indices that remain active.
         """
-       if self.dynamic_ablation and current_gamma != 0:
+       if self.dynamic_ablation and current_gamma != 0:#اگر dynamic ablation فعال باشد و gamma ≠ 0:
+
+→ وارد الگوریتم حذف نورون پویا می‌شویم.
             dense_fan_in = math.prod(weight.shape[1:])
             # Max nnz elements, regardless of const fan in
-            n_ones_max = int(mask.numel() * (1 - sparsity))
+            n_ones_max = int(mask.numel() * (1 - sparsity))#حداکثر تعداد وزن‌های non-zero مجاز در این لایه.
             # Min neurons to use dense fan-in at target sparsity
-            min_neurons = int(n_ones_max // dense_fan_in)
+            min_neurons = int(n_ones_max // dense_fan_in)#حداقل تعداد نورونی که می‌توانند زنده بمانند اگر fan-in کامل باشد.
             neurons_to_ablate: List[int] = []
-            saliency_mask = torch.zeros(
+            saliency_mask = torch.zeros(#یک mask به اندازه کل وزن‌ها.
                 size=(score_drop.numel(),),
                 dtype=torch.bool,
                 device=score_drop.device,
             )
             _, keep_idx = score_drop.flatten().sort(descending=True)
-            saliency_mask[keep_idx[:n_keep]] = True
+            saliency_mask[keep_idx[:n_keep]] = True#بزرگ‌ترین وزن‌ها → salient.
 
             _, grow_idx = score_grow.flatten().sort(descending=True)
-            saliency_mask[grow_idx[:n_prune]] = True
+            saliency_mask[grow_idx[:n_prune]] = True#بزرگ‌ترین گرادیان‌ها → salient.
 
             saliency_mask = saliency_mask.reshape(shape=score_drop.shape)
             neuron_saliency_counts = {
@@ -423,11 +462,11 @@ class RigLConstFanScheduler(RigLScheduler):
                 )
             ]
             if current_gamma >= 1:
-                _min_salient_weights_per_neuron = int(current_gamma)
+                _min_salient_weights_per_neuron = int(current_gamma)#اگر gamma عدد صحیح باشد → حداقل تعداد اتصال مهم ثابت است.
 
             else:
                 if self.use_sparse_const_fan_in_for_ablation:
-                    # We will compare against the const-fan-in before ablation
+                    # We will compare against the const-fan-in before ablationحداقل درصدی از fan-in باید salient باشد.
                     total_fan_in = get_fan_in_after_ablation(
                         weight, 0, sparsity
                     )
@@ -451,6 +490,8 @@ class RigLConstFanScheduler(RigLScheduler):
                 neuron_idx
                 for neuron_idx, neuron_sal in neuron_saliency_counts
                 if neuron_sal < _min_salient_weights_per_neuron
+                #saliency_count < threshold حذف کامل
+
             ]
             fan_in = get_fan_in_after_ablation(
                 weight_tensor=saliency_mask,
@@ -504,7 +545,9 @@ class RigLConstFanScheduler(RigLScheduler):
         # Set ablated neuron scores to min
         for neuron_idx in range(len(score_drop)):
             if neuron_idx in neurons_to_ablate:
-                score_drop[neuron_idx] = score_drop.min() - 1
+                score_drop[neuron_idx] = score_drop.min() - 1#اگر نورون قرار است ablate شود:
+
+همه وزن‌هایش بدترین امتیاز ممکن می‌گیرند
         try:
             idx_to_not_drop = torch.topk(
                 score_drop.flatten(), k=n_keep, sorted=False
@@ -562,13 +605,15 @@ class RigLConstFanScheduler(RigLScheduler):
         grow_mask = torch.zeros(
             size=drop_mask.shape, dtype=torch.bool, device=drop_mask.device
         )
-        for idx, (drop_mask_filter, grow_mask_filter) in enumerate(
+        for idx, (drop_mask_filter, grow_mask_filter) in enumerate(#محل‌هایی که قرار است رشد کنندوضعیت فعلی اتصال‌های فعال آن نورون
             list(zip(drop_mask, grow_mask))
         ):  # Iterate over filters
             if idx in neurons_to_ablate:
                 grow_mask_filter[:] = False
                 grow_mask[idx] = grow_mask_filter
-            elif drop_mask_filter.sum() < n_fan_in:
+            elif drop_mask_filter.sum() < n_fan_in:#این نورون کمتر از حد مجاز اتصال فعال دارد.
+
+پس باید اتصال جدید رشد بدهیم.
                 # set scores of the enabled connections(ones) to min(s) - 1,
                 # so that they have the lowest scores in that filter / neuron
                 score_grow_lifted = torch.where(
